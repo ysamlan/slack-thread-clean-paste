@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slack Thread Cleaner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Using Inter font as Tailwind's default sans-serif */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 md:p-8 flex flex-col items-center">
+    <div class="container mx-auto max-w-3xl w-full bg-white p-6 rounded-lg shadow-xl">
+        <header class="mb-6 text-center">
+            <h1 class="text-3xl font-bold text-gray-800">Slack Thread Cleaner</h1>
+            <p class="text-gray-600 mt-2">Paste your copied Slack thread below to clean it up.</p>
+            <p class="text-gray-600 mt-2">All processing is done client-side in your browser; no data is sent to or retained on any backend.</p>
+        </header>
+
+        <div class="mb-6">
+            <label for="slackInput" class="block text-sm font-medium text-gray-700 mb-1">Pasted Slack Thread:</label>
+            <textarea id="slackInput" rows="15" class="w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500" placeholder="Paste Slack thread here..."></textarea>
+        </div>
+
+        <div class="text-center mb-8 flex flex-col sm:flex-row justify-center items-center space-y-3 sm:space-y-0 sm:space-x-4">
+            <button id="cleanButton" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-md shadow-md transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50 w-full sm:w-auto">
+                Clean Thread
+            </button>
+            <button id="copyMarkdownButton" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-md shadow-md transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 w-full sm:w-auto" disabled>
+                Copy as Markdown
+            </button>
+        </div>
+        <div id="copyFeedback" class="text-center text-sm text-green-600 h-5 mb-4"></div>
+
+
+        <div>
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4">Cleaned Output:</h2>
+            <div id="output" class="space-y-3">
+                 <p class="text-gray-500 italic">Cleaned thread will appear here once processed.</p>
+            </div>
+        </div>
+
+        <footer class="mt-12 text-center text-sm text-gray-500">
+                        <p>
+                <a href="https://github.com/ysamlan/slack-thread-clean-paste" target="_blank" rel="noopener noreferrer">source
+                    code</a> | <a href="LICENSE" target="_blank">MIT license</a> 
+            </p>
+        </footer>
+    </div>
+
+    <script>
+        // --- DOM Elements ---
+        const slackInputElement = document.getElementById('slackInput');
+        const cleanButtonElement = document.getElementById('cleanButton');
+        const copyMarkdownButtonElement = document.getElementById('copyMarkdownButton');
+        const outputDivElement = document.getElementById('output');
+        const copyFeedbackElement = document.getElementById('copyFeedback');
+
+        let lastCleanedMessages = []; // Store the last set of cleaned messages
+
+        // --- Event Listener for Clean Button ---
+        cleanButtonElement.addEventListener('click', () => {
+            console.clear(); 
+            console.log("--- Starting Slack Thread Cleaning ---");
+            copyFeedbackElement.textContent = ''; 
+            const rawInput = slackInputElement.value;
+            // console.log("Raw Input:\n", rawInput); // Kept for debugging if needed
+            lastCleanedMessages = parseSlackThread(rawInput);
+            displayMessages(lastCleanedMessages);
+            copyMarkdownButtonElement.disabled = lastCleanedMessages.length === 0;
+            console.log("--- Finished Slack Thread Cleaning ---");
+        });
+
+        // --- Event Listener for Copy Markdown Button ---
+        copyMarkdownButtonElement.addEventListener('click', () => {
+            if (lastCleanedMessages.length === 0) {
+                copyFeedbackElement.textContent = 'Nothing to copy. Clean a thread first.';
+                setTimeout(() => copyFeedbackElement.textContent = '', 3000);
+                return;
+            }
+            const markdownText = formatMessagesAsMarkdown(lastCleanedMessages);
+            copyToClipboard(markdownText);
+        });
+
+        /**
+         * Formats messages into a Markdown string.
+         */
+        function formatMessagesAsMarkdown(messages) {
+            if (!messages || messages.length === 0) return '';
+            return messages.map(msg => {
+                return `**${msg.name}** (${msg.timestamp})\n${msg.message}\n\n---\n`;
+            }).join('\n');
+        }
+
+        /**
+         * Copies the given text to the clipboard.
+         */
+        function copyToClipboard(text) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed'; 
+            textarea.style.opacity = 0; 
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                const successful = document.execCommand('copy');
+                const msg = successful ? 'Copied to clipboard!' : 'Copying failed.';
+                copyFeedbackElement.textContent = msg;
+                console.log(msg);
+            } catch (err) {
+                copyFeedbackElement.textContent = 'Error copying to clipboard.';
+                console.error('Error copying text: ', err);
+            }
+            document.body.removeChild(textarea);
+            setTimeout(() => copyFeedbackElement.textContent = '', 3000);
+        }
+
+        /**
+         * Helper to get a consistently formatted date string.
+         * @param {Date} dateObj - The date object to format.
+         * @returns {string} - Formatted date string (e.g., "May 20, 2025").
+         */
+        function getFormattedDate(dateObj) {
+            return dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+
+        /**
+         * Helper to extract date from a line and determine if it's a context-setting line.
+         * @param {string} line - The line to parse.
+         * @param {Date} systemCurrentDate - The current system date, for "Today"/"Yesterday" context.
+         * @returns {Object|null} - { dateString: "May 20, 2025", isContextLine: true } or null.
+         */
+        function extractDateFromLine(line, systemCurrentDate) {
+            let extractedDateString = null;
+            let isContextLine = false; // Is this line primarily a date marker?
+
+            const todayMatch = line.match(/^Today at \d{1,2}:\d{2}\s*(AM|PM)/i);
+            if (todayMatch) {
+                extractedDateString = getFormattedDate(systemCurrentDate);
+                isContextLine = true;
+            }
+
+            const yesterdayMatch = line.match(/^Yesterday at \d{1,2}:\d{2}\s*(AM|PM)/i);
+            if (yesterdayMatch) {
+                const yesterday = new Date(systemCurrentDate);
+                yesterday.setDate(systemCurrentDate.getDate() - 1);
+                extractedDateString = getFormattedDate(yesterday);
+                isContextLine = true;
+            }
+            
+            // Matches patterns like "Sep 8, 2023 at 10:00 AM", "Sep 8 at 10:00 AM", "Monday, Sep 8 at 10:00 AM"
+            // Also matches "May 15th" or "May 15th | View reply"
+            const dateAtTimePattern = /^(([A-Za-z]+,?\s*)?[A-Za-z]{3,}\s+\d{1,2}(?:st|nd|rd|th)?(,?\s*\d{4})?)\s*(at\s+\d{1,2}:\d{2}\s*(AM|PM)|\|.*)?/i;
+            const specificDateMatch = line.match(dateAtTimePattern);
+
+            if (specificDateMatch) {
+                let dateStringToParse = specificDateMatch[1]; 
+                // Remove 'st', 'nd', 'rd', 'th' from day number for Date parsing
+                dateStringToParse = dateStringToParse.replace(/(\d{1,2})(st|nd|rd|th)/i, '$1');
+
+                const simpleDatePart = dateStringToParse.replace(/^[A-Za-z]+,\s*/, ''); 
+                if (!/\d{4}/.test(dateStringToParse) && /^[A-Za-z]{3,}\s+\d{1,2}$/.test(simpleDatePart)) {
+                     dateStringToParse += `, ${systemCurrentDate.getFullYear()}`;
+                }
+                const parsedDate = new Date(dateStringToParse);
+                if (!isNaN(parsedDate.getTime())) {
+                    extractedDateString = getFormattedDate(parsedDate);
+                    // Check if the line *only* contains date information or date followed by " | View reply" etc.
+                    // This helps distinguish between "May 15th | View reply" (context line) and a message starting with a date.
+                    if (line.toLowerCase().startsWith(specificDateMatch[1].toLowerCase()) && 
+                        (line.length === specificDateMatch[1].length || /\s*(at|\|)/i.test(line.substring(specificDateMatch[1].length)))) {
+                        isContextLine = true; 
+                    }
+                }
+            }
+
+
+            if (extractedDateString) {
+                return { dateString: extractedDateString, isContextLine: isContextLine };
+            }
+            return null;
+        }
+
+
+        /**
+         * Parses the raw Slack thread input into an array of message objects.
+         */
+        function parseSlackThread(rawInput) {
+            const lines = rawInput.split('\n');
+            // console.log(`Input split into ${lines.length} lines.`); // Kept for debugging
+            const cleanedMessages = [];
+            let currentName = null;
+            let currentTimePart = null; // Will store HH:MM AM/PM
+            let currentMessageContent = [];
+
+            const systemNow = new Date(); // System's current date for context
+            let currentDateForMessages = getFormattedDate(systemNow); // Default to today
+
+            function isPotentialName(text) {
+                if (!text || text.length === 0 || text.length > 50) return false;
+                if (/^\d{1,2}:\d{2}(\s*(AM|PM))?$/i.test(text)) return false;
+                if (/^(\d+)$/.test(text)) return false;
+                // Adjusted to be more robust against date lines
+                if (/view thread|repl(y|ies)|new$|^Today at|^Yesterday at|^[A-Za-z]{3,}\s+\d{1,2}(?:st|nd|rd|th)?/i.test(text)) return false; 
+                if (text.startsWith('@') || text.includes('http:') || text.includes('https:')) return false;
+                return true;
+            }
+
+            function isFullTimestamp(text) { // Checks for HH:MM AM/PM
+                return text && /^\d{1,2}:\d{2}\s*(AM|PM)/i.test(text);
+            }
+            
+            function isAnyTimestamp(text) { // Checks for HH:MM or HH:MM AM/PM
+                return text && /^\d{1,2}:\d{2}(\s*(AM|PM))?$/i.test(text);
+            }
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                const nextLine = (i + 1 < lines.length) ? lines[i+1].trim() : null;
+                const thirdLine = (i + 2 < lines.length) ? lines[i+2].trim() : null;
+
+                // 1. Attempt to extract date context from the current line
+                const lineDateInfo = extractDateFromLine(line, systemNow);
+                if (lineDateInfo && lineDateInfo.isContextLine) {
+                    currentDateForMessages = lineDateInfo.dateString;
+                    // console.log(`  [Line ${i}] Updated currentDateForMessages to: "${currentDateForMessages}" from line "${line}"`);
+                    continue; 
+                }
+
+                let newSpeakerDetected = false;
+
+                // 2. Try to detect a new speaker/message block
+                if (isPotentialName(line) && nextLine && isFullTimestamp(nextLine)) { // Pattern 1: Name, Timestamp
+                    if (currentName && currentTimePart && currentMessageContent.length > 0) {
+                        const messageToPush = currentMessageContent.join(' ').replace(/\s*\(edited\)\s*$/i, '').trim();
+                        if (messageToPush) cleanedMessages.push({ name: currentName, timestamp: `${currentDateForMessages}, ${currentTimePart}`, message: messageToPush });
+                    }
+                    currentName = line;
+                    currentTimePart = nextLine.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))/i)[0];
+                    currentMessageContent = [];
+                    i += 1; 
+                    newSpeakerDetected = true;
+                }
+                else if (isPotentialName(line) && nextLine && line === nextLine && thirdLine && isFullTimestamp(thirdLine)) { // Pattern 2: Name, Same Name, Timestamp
+                     if (currentName && currentTimePart && currentMessageContent.length > 0) {
+                        const messageToPush = currentMessageContent.join(' ').replace(/\s*\(edited\)\s*$/i, '').trim();
+                         if (messageToPush) cleanedMessages.push({ name: currentName, timestamp: `${currentDateForMessages}, ${currentTimePart}`, message: messageToPush });
+                    }
+                    currentName = line;
+                    currentTimePart = thirdLine.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))/i)[0];
+                    currentMessageContent = [];
+                    i += 2; 
+                    newSpeakerDetected = true;
+                }
+
+                if (newSpeakerDetected) {
+                    continue;
+                }
+
+                // 3. If not a new speaker, check if the line should be ignored or added to content
+                let ignoreThisLine = false;
+                if (line === "") {
+                    ignoreThisLine = true;
+                } else if ((/^(\d+)$/.test(line) && line.length <= 2)) { 
+                    ignoreThisLine = true;
+                } else if (/view thread/i.test(line) || /\d+\s+repl(y|ies)/i.test(line) || /new$/i.test(line)) {
+                    ignoreThisLine = true;
+                } else if (currentName && line === currentName && currentMessageContent.length > 0) {
+                    ignoreThisLine = true;
+                } else if (currentName && isAnyTimestamp(line)) { 
+                    if (currentMessageContent.length === 0) { 
+                        ignoreThisLine = true;
+                    } else if (nextLine && nextLine.trim() !== "" && !isAnyTimestamp(nextLine.trim()) && !/view thread|repl(y|ies)/i.test(nextLine.trim())) { 
+                        ignoreThisLine = true;
+                    } else if (!nextLine || nextLine.trim() === "" || /view thread|repl(y|ies)/i.test(nextLine.trim())) { 
+                        ignoreThisLine = true;
+                    }
+                }
+                
+                if (ignoreThisLine) {
+                    continue;
+                }
+                
+                // 4. Message Content Accumulation
+                if (currentName) {
+                    // Updated regex for emoji reactions to handle multiple emojis and skin tones
+                    if (/^(:[\w+-]+:)+$/i.test(line) && (!nextLine || nextLine.trim() === "" || (/^(\d+)$/.test(nextLine.trim()) && nextLine.trim().length <=2) )) {
+                        // console.log(`  [Line ${i}] Ignored: Likely emoji reaction line "${line}".`);
+                        if (nextLine && (/^(\d+)$/.test(nextLine.trim()) && nextLine.trim().length <=2)) i++; 
+                        continue; 
+                    }
+                    currentMessageContent.push(line);
+                } else {
+                    // console.log(`  [Line ${i}] No current speaker, and line not matched/ignorable. Skipping line: "${line}"`);
+                }
+            }
+
+            // Add the last collected message
+            if (currentName && currentTimePart && currentMessageContent.length > 0) {
+                const messageToPush = currentMessageContent.join(' ').replace(/\s*\(edited\)\s*$/i, '').trim();
+                 if (messageToPush) cleanedMessages.push({ name: currentName, timestamp: `${currentDateForMessages}, ${currentTimePart}`, message: messageToPush });
+            }
+
+            console.log("Final cleanedMessages array:", cleanedMessages);
+            return cleanedMessages;
+        }
+
+        /**
+         * Displays the cleaned messages in the output div.
+         */
+        function displayMessages(messages) {
+            outputDivElement.innerHTML = ''; 
+
+            if (messages.length === 0) {
+                outputDivElement.innerHTML = '<p class="text-gray-500 italic p-4 text-center">No messages found or input was not in the expected format. Please ensure the pasted text follows the common Slack thread structure.</p>';
+                copyMarkdownButtonElement.disabled = true;
+                return;
+            }
+
+            messages.forEach(msg => {
+                const messageContainer = document.createElement('div');
+                messageContainer.className = 'message-block p-4 mb-3 border border-gray-200 rounded-lg bg-white shadow-sm hover:shadow-md transition-shadow duration-150';
+
+                const headerP = document.createElement('p');
+                headerP.className = 'mb-1 flex items-center';
+
+                const nameStrong = document.createElement('strong');
+                nameStrong.className = 'text-indigo-700 font-semibold';
+                nameStrong.textContent = msg.name;
+
+                const timestampSpan = document.createElement('span');
+                timestampSpan.className = 'text-gray-500 text-xs ml-2';
+                timestampSpan.textContent = `(${msg.timestamp})`; 
+
+                headerP.appendChild(nameStrong);
+                headerP.appendChild(timestampSpan);
+
+                const contentP = document.createElement('p');
+                contentP.className = 'text-gray-800 leading-relaxed'; 
+                contentP.textContent = msg.message; 
+
+                messageContainer.appendChild(headerP);
+                messageContainer.appendChild(contentP);
+                outputDivElement.appendChild(messageContainer);
+            });
+            copyMarkdownButtonElement.disabled = false;
+        }
+    </script>
+</body>
+</html>
